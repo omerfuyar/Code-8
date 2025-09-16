@@ -22,14 +22,19 @@
 #define CHIP8_KEY_COUNT 0x10
 #define CHIP8_ROM_START 0x200
 #define CHIP8_CLOCK_FREQUENCY 60
-#define CHIP8_SCREEN_WIDTH 0x40
-#define CHIP8_SCREEN_HEIGHT 0x20
+
+#define SCREEN_WIDTH 0x40
+#define SCREEN_HEIGHT 0x20
+#define SCREEN_WINDOW_VERTICAL '|'
+#define SCREEN_WINDOW_HORIZONTAL '-'
+#define SCREEN_SET '#'
+#define SCREEN_UNSET ' '
 
 short STACK[CHIP8_STACK_COUNT] = {0};
 char REGISTERS[CHIP8_REGISTER_COUNT] = {0};
 char MEMORY[CHIP8_MEMORY_SIZE] = {0};
 bool KEYS[CHIP8_KEY_COUNT] = {0};
-bool SCREEN[CHIP8_SCREEN_HEIGHT][CHIP8_SCREEN_WIDTH] = {0};
+bool SCREEN[SCREEN_HEIGHT][SCREEN_WIDTH] = {0};
 
 short PC = CHIP8_ROM_START; // Program counter (index)
 char SC = 0;                // Stack counter (index)
@@ -38,7 +43,10 @@ char DELAY_TIMER = 0;
 char SOUND_TIMER = 0;
 clock_t LAST_UPDATE = 0;
 
-void screenDraw(char x, char y, char height)
+char RENDER_BUFFER[(SCREEN_HEIGHT + 3) * ((SCREEN_WIDTH * 2) + 3)] = {0};
+short RENDER_INDEX = 0;
+
+void draw(char x, char y, char height)
 {
     REGISTERS[0xf] = 0;
 
@@ -48,48 +56,25 @@ void screenDraw(char x, char y, char height)
         {
             bool temp = SCREEN[y + i][x + j];
 
-            SCREEN[y + i][x + j] ^= (MEMORY[I + i] >> j);
+            SCREEN[y + i][x + j] ^= ((MEMORY[I + i] >> j) & 1);
 
             if (temp && !SCREEN[y + i][x + j])
             {
                 REGISTERS[0xf] = 1;
             }
-
-            if (temp != SCREEN[y + i][x + j])
-            {
-                printf("\x1b[%d;%dH", y + i + 1, x + j + 1);
-
-                if (SCREEN[y + i][x + j])
-                {
-                    // printf("█");
-                    printf("#");
-                }
-                else
-                {
-                    printf(" ");
-                }
-            }
         }
     }
-
-    fflush(stdout);
 }
 
-void screenClear()
+void clear()
 {
-    for (char i = 0; i < CHIP8_SCREEN_HEIGHT; i++)
+    for (char i = 0; i < SCREEN_HEIGHT; i++)
     {
-        for (char j = 0; j < CHIP8_SCREEN_WIDTH; j++)
+        for (char j = 0; j < SCREEN_WIDTH; j++)
         {
             SCREEN[i][j] = false;
         }
     }
-}
-
-void screenInit()
-{
-    screenClear();
-    printf("\x1b[?25l");
 }
 
 void execute(char ins1, char ins2)
@@ -111,7 +96,7 @@ void execute(char ins1, char ins2)
             switch (nib4)
             {
             case 0x0: // 00E0 Clears the screen.
-                screenClear();
+                clear();
                 break;
             case 0xE:           // 00EE Returns from a subroutine.
                 PC = STACK[SC]; //!
@@ -208,7 +193,7 @@ void execute(char ins1, char ins2)
         REGISTERS[nib2] = (rand() % 0x100) & (nib2 * 0x10 * 0x10 + nib3 * 0x10 + nib4);
         break;
     case 0xD: // DXYN Draws a sprite at coordinate (VX, VY) that has a width of 8 pixels and a height of N pixels. Each row of 8 pixels is read as bit-coded starting from memory location I; I value does not change after the execution of this instruction. As described above, VF is set to 1 if any screen pixels are flipped from set to unset when the sprite is drawn, and to 0 if that does not happen.
-        screenDraw(REGISTERS[nib2], REGISTERS[nib3], nib4);
+        draw(REGISTERS[nib2], REGISTERS[nib3], nib4);
         break;
     case 0xE:
         switch (nib3)
@@ -290,6 +275,51 @@ void inputs()
 {
 }
 
+void render()
+{
+    printf("\x1b[2J");
+
+    RENDER_INDEX = 0;
+
+    RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_VERTICAL;
+    for (char i = 0; i < SCREEN_WIDTH; i++)
+    {
+        RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_HORIZONTAL;
+        RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_HORIZONTAL;
+    }
+    RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_VERTICAL;
+
+    for (char i = 0; i < SCREEN_HEIGHT; i++)
+    {
+        RENDER_BUFFER[RENDER_INDEX++] = '\n';
+        RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_VERTICAL;
+
+        for (char j = 0; j < SCREEN_WIDTH; j++)
+        {
+            RENDER_BUFFER[RENDER_INDEX++] = SCREEN[i][j] ? SCREEN_SET : SCREEN_UNSET;
+            RENDER_BUFFER[RENDER_INDEX++] = SCREEN[i][j] ? SCREEN_SET : SCREEN_UNSET;
+        }
+
+        RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_VERTICAL;
+    }
+
+    RENDER_BUFFER[RENDER_INDEX++] = '\n';
+    RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_VERTICAL;
+    for (char i = 0; i < SCREEN_WIDTH; i++)
+    {
+        RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_HORIZONTAL;
+        RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_HORIZONTAL;
+    }
+    RENDER_BUFFER[RENDER_INDEX++] = SCREEN_WINDOW_VERTICAL;
+
+    RENDER_BUFFER[RENDER_INDEX++] = '\n';
+
+    RENDER_BUFFER[RENDER_INDEX++] = '\0';
+
+    printf(RENDER_BUFFER);
+    fflush(stdout);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -313,13 +343,14 @@ int main(int argc, char **argv)
     }
 
     srand(time(NULL));
-    screenInit();
+    printf("\x1b[?25l");
 
     while (1)
     {
         execute(MEMORY[PC], MEMORY[PC + 1]);
         timers();
         inputs();
+        render();
     }
 
     return 1;
